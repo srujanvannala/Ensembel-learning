@@ -1,0 +1,185 @@
+import streamlit as st
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+import pickle
+from io import BytesIO
+
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.model_selection import train_test_split
+from sklearn.naive_bayes import MultinomialNB
+from sklearn.linear_model import LogisticRegression
+from sklearn.svm import LinearSVC
+from sklearn.ensemble import VotingClassifier
+from sklearn.pipeline import Pipeline
+from sklearn.metrics import (
+    accuracy_score,
+    confusion_matrix,
+    roc_curve,
+    auc
+)
+
+# ------------------------------------------------------
+# PAGE TITLE
+# ------------------------------------------------------
+st.title("Sentiment Analysis Using Ensemble Learning")
+st.write("### Logistic Regression + SVM + Naive Bayes (Voting Classifier)")
+st.write("Dataset: Twitter US Airline Sentiment")
+st.write("---")
+
+# ------------------------------------------------------
+# LOAD REAL DATASET
+# ------------------------------------------------------
+@st.cache_data
+def load_dataset():
+    url = "https://raw.githubusercontent.com/kolaveridi/kaggle-Twitter-US-Airline-Sentiment-/master/Tweets.csv"
+    df = pd.read_csv(url)
+    df = df[['text', 'airline_sentiment']]
+    df = df.rename(columns={'airline_sentiment': 'sentiment'})
+    return df
+
+df = load_dataset()
+
+st.write("### 📌 Dataset Preview")
+st.dataframe(df.head())
+
+# ------------------------------------------------------
+# TRAIN MODEL + PREDICT
+# ------------------------------------------------------
+@st.cache_resource
+def train_model_and_predict():
+    X = df['text']
+    y = df['sentiment']
+
+    X_train, X_test, y_train, y_test = train_test_split(
+        X, y, test_size=0.2, random_state=42, stratify=y)
+
+    model1 = LogisticRegression(max_iter=200)
+    model2 = LinearSVC()
+    model3 = MultinomialNB()
+
+    ensemble = VotingClassifier(
+        estimators=[
+            ('lr', model1),
+            ('svm', model2),
+            ('nb', model3)
+        ],
+        voting='hard'
+    )
+
+    pipeline = Pipeline([
+        ('tfidf', TfidfVectorizer(stop_words='english')),
+        ('ensemble', ensemble)
+    ])
+
+    pipeline.fit(X_train, y_train)
+
+    y_pred = pipeline.predict(X_test)
+
+    # ROC: Convert to binary (positive vs all)
+    binary_y_test = (y_test == "positive").astype(int)
+    binary_y_pred = (y_pred == "positive").astype(int)
+
+    fpr, tpr, _ = roc_curve(binary_y_test, binary_y_pred)
+    roc_auc = auc(fpr, tpr)
+
+    # Predictions DataFrame
+    pred_df = pd.DataFrame({
+        'Text': X_test.values,
+        'Actual Sentiment': y_test.values,
+        'Predicted Sentiment': y_pred
+    })
+
+    return pipeline, y_test, y_pred, fpr, tpr, roc_auc, pred_df
+
+
+model, y_test, y_pred, fpr, tpr, roc_auc, pred_df = train_model_and_predict()
+
+st.success("Model trained successfully ✔")
+st.write(f"### Accuracy: **{accuracy_score(y_test, y_pred) * 100:.2f}%**")
+
+st.write("---")
+
+# ------------------------------------------------------
+# CONFUSION MATRIX
+# ------------------------------------------------------
+st.write("## 📊 Confusion Matrix")
+
+cm = confusion_matrix(y_test, y_pred)
+fig, ax = plt.subplots()
+sns.heatmap(cm, annot=True, fmt='d', cmap='Blues',
+            xticklabels=np.unique(y_test),
+            yticklabels=np.unique(y_test))
+plt.xlabel("Predicted")
+plt.ylabel("Actual")
+plt.title("Confusion Matrix")
+st.pyplot(fig)
+
+# ------------------------------------------------------
+# ROC CURVE
+# ------------------------------------------------------
+st.write("## 📈 ROC Curve (Positive vs All)")
+
+fig2, ax2 = plt.subplots()
+plt.plot(fpr, tpr, label=f"AUC = {roc_auc:.2f}")
+plt.plot([0, 1], [0, 1], linestyle="--")
+plt.xlabel("False Positive Rate")
+plt.ylabel("True Positive Rate")
+plt.title("ROC Curve")
+plt.legend()
+st.pyplot(fig2)
+
+st.write("---")
+
+# ------------------------------------------------------
+# DOWNLOAD MODEL BUTTON
+# ------------------------------------------------------
+st.write("## 📥 Download Trained Model")
+
+model_buffer = BytesIO()
+pickle.dump(model, model_buffer)
+model_buffer.seek(0)
+
+st.download_button(
+    label="Download model.pkl",
+    data=model_buffer,
+    file_name="sentiment_model.pkl",
+    mime="application/octet-stream"
+)
+
+# ------------------------------------------------------
+# DOWNLOAD PREDICTIONS CSV
+# ------------------------------------------------------
+st.write("## 📥 Download Predictions CSV")
+
+csv_data = pred_df.to_csv(index=False).encode('utf-8')
+
+st.download_button(
+    label="Download predictions.csv",
+    data=csv_data,
+    file_name="predictions.csv",
+    mime="text/csv"
+)
+
+st.write("---")
+
+# ------------------------------------------------------
+# SENTIMENT PREDICTION UI
+# ------------------------------------------------------
+st.write("## 🔍 Predict Sentiment from Text")
+
+user_text = st.text_area("Enter text to analyze:", "")
+
+if st.button("Analyze Sentiment"):
+    if user_text.strip() == "":
+        st.warning("Please enter some text!")
+    else:
+        pred = model.predict([user_text])[0]
+
+        if pred == "positive":
+            st.success(f"Sentiment: **{pred.upper()}** 😊")
+        elif pred == "negative":
+            st.error(f"Sentiment: **{pred.upper()}** 😡")
+        else:
+            st.info(f"Sentiment: **{pred.upper()}** 😐")
